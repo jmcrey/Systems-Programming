@@ -1,0 +1,130 @@
+#!/bin/sh
+for key in "$@"
+do
+    case $key in
+	-n) 
+	    shift 
+	    num=$1
+	    shift
+	;;
+	-i) 
+	    shift
+	    min=$1
+	    shift
+	    max=$1
+	    shift
+	    step=$1
+	    shift
+	;;
+	-p) 
+	    shift
+	    file=$1
+	    shift
+	;;
+	-r)
+	    shift
+	    COUNTER=1
+	    if [[ -e $1 ]]; then
+	      exec 3<$1       # This is an open onto fd 3
+	      while read -u 3 line    # Reading from fd 3
+	      do
+	        if [[ $COUNTER -eq 1 ]]; then
+  	          min=`echo $line | awk '{split($0, avgs,","); print avgs[1]}'`
+	          max=`echo $line | awk '{split($0, avgs,","); print avgs[2]}'`
+	          step=`echo $line | awk '{split($0, avgs,","); print avgs[3]}'`
+	          num=`echo $line | awk '{split($0, avgs,","); print avgs[4]}'`
+		  file=`echo $line | awk '{split($0, avgs,","); print avgs[5]}'`
+		  let COUNTER=COUNTER+1
+	        else
+		  echo $line >>./tempfile
+	        fi
+	      done
+	      exec 3<&-
+	    else 
+		echo "Bogus file, exiting..."; exit 1
+	    fi
+	;;
+	-*) echo "Wrong arguments, exiting"; exit 1
+	esac
+done
+
+clean_up() {
+    rm tempfile
+    if [ -f plotfile.txt ]
+    then
+    	rm plotfile.txt
+    fi
+
+   if [ -f stderrfile ]; then
+	rm stderrfile
+   fi
+}
+
+dump() {
+    echo "$min,$max,$step,$num,$file" > ./beetle.state
+    exec 3<./tempfile       # This is an open onto fd 3
+    while read -u 3 line    # Reading from fd 3
+    do
+      #split script came from: http://stackoverflow.com/questions/19606816/bash-awk-split-string-into-array
+      echo $line >> ./beetle.state
+    done
+    exec 3<&-
+}
+trap 'clean_up; exit' 2  #SIGINT
+trap 'echo "square-size is $min"' 10  #SIGUSR1
+trap 'dump; clean_up; exit' 12  #SIGUSR2
+
+MINIMUM=$min
+./beetle $min $num 1>>./tempfile 2>./stderrfile &
+#eval $BEETLE
+wait $!
+if [[ -z "stderrfile" ]]; then
+    echo "There has been an error, exiting..."; clean_up; exit 1
+fi
+
+let min=min+$step
+
+
+while [ $min -le $max ]
+do
+   ./beetle $min $num 1>>./tempfile 2>>./stderrfile &
+#   eval $BEETLE
+   wait $!
+   if [[ -s "stderrfile" ]]; then
+    echo "There has been an error, exiting..."; clean_up; exit 1
+   fi
+   let min=min+$step
+done
+
+for job in `jobs -p`
+do
+    wait $job
+done
+
+exec 3<./tempfile       # This is an open onto fd 3
+while read -u 3 line    # Reading from fd 3
+do
+  #split script came from: http://stackoverflow.com/questions/19606816/bash-awk-split-string-into-array
+  AVERAGE=`echo $line | awk '{split($0, avgs," "); print avgs[11]}'`
+  MINIMUM=`echo $line | awk '{split($0, avgs," "); print avgs[1]}'`
+  echo "$MINIMUM $AVERAGE"      # Assumes simple line of tex
+done
+exec 3<&-
+
+if [[ ! -z "$file" ]]; then
+   echo "#X Y">plotfile.txt 
+   exec 3<./tempfile
+   while read -u 3 line    # Reading from fd 3
+   do
+     #split script came from: http://stackoverflow.com/questions/19606816/bash-awk-split-string-into-array
+     AVERAGE=`echo $line | awk '{split($0, avgs," "); print avgs[11]}'`
+     MINIMUM=`echo $line | awk '{split($0, avgs," "); print avgs[1]}'`
+     echo "$MINIMUM $AVERAGE">>plotfile.txt      # Assumes simple line of tex
+   done
+   exec 3<&-
+   XTITLE="Square Side (inches)"
+   YTITLE="Mean Beetle Lifetime (seconds)"
+   gnuplot -p -e "set terminal pngcairo; set output '$file'; set xrange [1:$max]; set xlabel '$XTITLE'; set yrange [0:$AVERAGE]; set ylabel '$YTITLE'; plot 'plotfile.txt'" 
+fi
+
+clean_up
